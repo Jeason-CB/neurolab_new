@@ -17,6 +17,14 @@ def list_projects(db: Session=Depends(get_db)):
 @router.post('/projects', response_model=ProjectOut, status_code=201)
 def create_project(data: ProjectCreate, db: Session=Depends(get_db)):
     item=Project(**data.model_dump()); db.add(item); db.flush()
+    # Crear también una arquitectura inicial para que el proyecto no quede vacío.
+    default_layers = [
+        {'id': 1, 'type': 'Entrada', 'units': 784, 'activation': '—'},
+        {'id': 2, 'type': 'Densa', 'units': 128, 'activation': 'ReLU'},
+        {'id': 3, 'type': 'Densa', 'units': 64, 'activation': 'ReLU'},
+        {'id': 4, 'type': 'Salida', 'units': 10, 'activation': 'Softmax'},
+    ]
+    db.add(Architecture(project_id=item.id, name=f'Arquitectura inicial · {item.name}', family=item.family, config_json={'layers': default_layers}, version=1))
     db.add(AuditEvent(project_id=item.id, action='project.created', metadata_json={'name':item.name}))
     db.commit(); db.refresh(item); return item
 
@@ -30,21 +38,24 @@ def get_project(project_id: int, db: Session=Depends(get_db)):
 def create_architecture(project_id: int, data: ArchitectureCreate, db: Session=Depends(get_db)):
     if not db.get(Project,project_id): raise HTTPException(404,'Proyecto no encontrado')
     cfg=data.config_json; layers=cfg.get('layers',[])
-    if data.family not in ('Feedforward','FFN'):
-        raise HTTPException(422,'El worker MVP entrena Feedforward con MNIST. RNN, CNN y GAN quedan documentadas para fases posteriores.')
+    allowed_families = ('Feedforward', 'FFN', 'Convolucional (CNN)', 'CNN', 'Recurrente (RNN)', 'RNN', 'Generativa (GAN)', 'GAN')
+    if data.family not in allowed_families:
+        raise HTTPException(422, 'Familia de red no reconocida.')
     if len(layers)<2: raise HTTPException(422,'La arquitectura debe contener al menos entrada y salida')
     for layer in layers:
         if int(layer.get('units',0))<1: raise HTTPException(422,'Todas las capas deben tener unidades positivas')
         activation=str(layer.get('activation','ReLU')).lower()
         if activation not in ('relu','softmax','sigmoid','tanh','linear','elu','selu','—','none',''):
             raise HTTPException(422,f'Función de activación no admitida: {activation}')
-    item=Architecture(project_id=project_id, **data.model_dump()); db.add(item); db.commit(); db.refresh(item)
-    db.add(AuditEvent(project_id=project_id, action='architecture.created', metadata_json={'architecture_id':item.id})); db.commit()
+    latest_version = db.query(Architecture).filter_by(project_id=project_id).count() + 1
+    item=Architecture(project_id=project_id, name=data.name, family=data.family, config_json=data.config_json, version=latest_version); db.add(item); db.commit(); db.refresh(item)
+    db.add(AuditEvent(project_id=project_id, action='architecture.created', metadata_json={'architecture_id':item.id, 'version':item.version})); db.commit()
     return {'id':item.id,'project_id':project_id,'name':item.name,'family':item.family,'config_json':item.config_json,'version':item.version}
 
 @router.get('/projects/{project_id}/architectures')
 def list_architectures(project_id:int, db:Session=Depends(get_db)):
-    return db.query(Architecture).filter_by(project_id=project_id).all()
+    if not db.get(Project, project_id): raise HTTPException(404, 'Proyecto no encontrado')
+    return db.query(Architecture).filter_by(project_id=project_id).order_by(Architecture.id.desc()).all()
 
 @router.get('/datasets')
 def list_datasets(db:Session=Depends(get_db)):
@@ -67,6 +78,8 @@ def create_training(project_id:int,data:TrainingCreate,db:Session=Depends(get_db
     if not project: raise HTTPException(404,'Proyecto no encontrado')
     if not arch or arch.project_id!=project_id: raise HTTPException(422,'Arquitectura no válida para este proyecto')
     if not dataset or dataset.status!='Validado': raise HTTPException(422,'Se requiere un dataset validado')
+    if arch.family not in ('Feedforward', 'FFN'):
+        raise HTTPException(422, 'En esta versión solo está habilitado el entrenamiento Feedforward con MNIST. La arquitectura puede guardarse, pero CNN, RNN y GAN aún no tienen worker de entrenamiento.')
     job=TrainingJob(project_id=project_id,architecture_id=arch.id,dataset_id=dataset.id,epochs=data.epochs,batch_size=data.batch_size,optimizer=data.optimizer)
     db.add(job); db.flush(); db.add(AuditEvent(project_id=project_id,action='training.queued',metadata_json={'job_id':job.id})); db.commit(); db.refresh(job)
     return {'id':job.id,'project_id':project_id,'status':job.status,'progress':job.progress,'epochs':job.epochs,'message':'Trabajo agregado a la cola. Inicia el worker para procesarlo.'}
