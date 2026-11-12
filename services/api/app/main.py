@@ -4,65 +4,123 @@ from sqlalchemy.orm import Session
 from .core.config import settings
 from .core.database import Base, engine
 from .models import entities  # noqa: F401
-from .models.entities import Project, Dataset
+from .models.entities import Project, Dataset, Architecture
 from .api.v1.routes import router
 
-# Genera de forma automática las tablas en PostgreSQL si no existen
+# Crea las tablas que todavía no existan. No elimina ni reemplaza datos.
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title='NeuroLab Enterprise API',
-    version='1.0.0',
-    description='API REST para proyectos, arquitecturas y entrenamiento de redes neuronales.'
+    title="NeuroLab Enterprise API",
+    version="1.1.0",
+    description="API REST para proyectos, arquitecturas y entrenamiento de redes neuronales.",
 )
 
-# Configuración del Middleware de CORS para conectar con Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[x.strip() for x in settings.cors_origins.split(',') if x.strip()],
+    allow_origins=[x.strip() for x in settings.cors_origins.split(",") if x.strip()],
     allow_credentials=True,
-    allow_methods=['*'],
-    allow_headers=['*']
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-app.include_router(router, prefix='/api/v1')
+app.include_router(router, prefix="/api/v1")
 
-# Evento de inicialización optimizado para poblar la Base de Datos en Render de forma segura
+
+def default_layers(family: str) -> list[dict]:
+    """Arquitectura inicial editable; no implica que todas las familias estén entrenables."""
+    f = family.lower()
+    if "cnn" in f or "convol" in f:
+        return [
+            {"id": 1, "type": "Entrada", "units": 784, "activation": "—"},
+            {"id": 2, "type": "Convolucional", "units": 32, "activation": "ReLU"},
+            {"id": 3, "type": "Pooling", "units": 2, "activation": "—"},
+            {"id": 4, "type": "Salida", "units": 10, "activation": "Softmax"},
+        ]
+    if "rnn" in f or "recurrent" in f:
+        return [
+            {"id": 1, "type": "Entrada", "units": 128, "activation": "—"},
+            {"id": 2, "type": "Recurrente", "units": 64, "activation": "Tanh"},
+            {"id": 3, "type": "Salida", "units": 10, "activation": "Softmax"},
+        ]
+    if "gan" in f or "generativa" in f:
+        return [
+            {"id": 1, "type": "Entrada", "units": 100, "activation": "—"},
+            {"id": 2, "type": "Densa", "units": 128, "activation": "ReLU"},
+            {"id": 3, "type": "Salida", "units": 784, "activation": "Tanh"},
+        ]
+    return [
+        {"id": 1, "type": "Entrada", "units": 784, "activation": "—"},
+        {"id": 2, "type": "Densa", "units": 128, "activation": "ReLU"},
+        {"id": 3, "type": "Densa", "units": 64, "activation": "ReLU"},
+        {"id": 4, "type": "Salida", "units": 10, "activation": "Softmax"},
+    ]
+
+
 @app.on_event("startup")
 def populate_database():
+    """Carga datos de demostración sin duplicarlos y sin borrar datos existentes."""
+    projects = [
+        ("Reconocimiento de Dígitos MNIST", "Entrenamiento de una red neuronal para clasificar dígitos escritos a mano (0-9).", "Feedforward"),
+        ("Análisis de Fraude Bancario", "Proyecto de clasificación de transacciones potencialmente fraudulentas.", "Feedforward"),
+        ("Predicción de Demanda TRN-120", "Pronóstico de series temporales para optimizar inventarios.", "RNN"),
+        ("Segmentación de Imágenes Médicas", "Proyecto de segmentación y clasificación de imágenes médicas.", "CNN"),
+        ("Generación de Imágenes Artificiales", "Experimentación con redes generativas adversariales.", "GAN"),
+        ("Clasificador de Sentimientos", "Análisis de sentimientos en textos y reseñas.", "RNN"),
+        ("Detección de Objetos", "Reconocimiento de objetos en imágenes.", "CNN"),
+        ("Filtro de Ruido Acústico", "Proyecto de reducción de ruido en señales de audio.", "Feedforward"),
+    ]
+    datasets = [
+        ("MNIST · Dígitos Escritos", "Imágenes", "Dataset integrado de 70,000 imágenes en escala de grises de 28x28. Se descarga desde TensorFlow/Keras al entrenar.", "Validado", {"source": "tensorflow.keras.datasets.mnist", "builtin": True, "rows": 70000, "classes": 10, "image_size": "28x28"}),
+        ("Credit Card Fraud · Metadatos", "CSV", "Registro de demostración. Debe cargarse el archivo real antes de entrenar.", "Pendiente", {"source": "external_upload_required", "builtin": False, "rows": 284807}),
+        ("Stock Demand · Metadatos", "CSV", "Registro de demostración para series temporales. Requiere archivo real.", "Pendiente", {"source": "external_upload_required", "builtin": False, "rows": 45000}),
+        ("Imágenes de Productos · Metadatos", "Imágenes", "Registro de demostración para clasificación visual. Requiere cargar imágenes.", "Pendiente", {"source": "external_upload_required", "builtin": False}),
+    ]
+
     try:
         with Session(engine) as db:
-            # 1. Población de Proyectos avanzados si la tabla está vacía
-            if db.query(Project).count() == 0:
-                db.add_all([
-                    Project(name='Reconocimiento de Dígitos MNIST', description='Entrenamiento de una red Feedforward con el set clásico de números escritos a mano (0-9).', family='Feedforward'),
-                    Project(name='Análisis de Fraude Bancario', description='Modelo inteligente encargado de auditar transacciones financieras en tiempo real.', family='Feedforward'),
-                    Project(name='Predicción de Demanda TRN-120', description='Pronóstico avanzado de series temporales para optimización automática de stock e inventarios.', family='RNN'),
-                    Project(name='Segmentación de Tumores Médicos', description='Clasificación multiclase píxel a píxel para la identificación de tejidos en tomografías.', family='CNN'),
-                    Project(name='Generación de Rostros Artificiales', description='Experimentación generativa mediante redes GAN para el aumento de volumen en datasets de diseño.', family='GAN'),
-                    Project(name='Clasificador de Sentimientos en Texto', description='Procesamiento de lenguaje natural mediante redes recurrentes para análisis de reseñas de usuarios.', family='RNN'),
-                    Project(name='Detección de Objetos Autónomos', description='Red convolucional optimizada para el rastreo de vehículos y peatones en tiempo real.', family='CNN'),
-                    Project(name='Filtro de Ruido Acústico Industrial', description='Autoencoder diseñado para la limpieza y restauración de señales de audio distorsionadas en fábricas.', family='Feedforward')
-                ])
-                print("✅ 8 Proyectos de Inteligencia Artificial agregados exitosamente a la base de datos.")
-            
-            # 2. Población de Datasets avanzados si la tabla está vacía
-            if db.query(Dataset).count() == 0:
-                db.add_all([
-                    Dataset(name='MNIST · Dígitos Escritos', format='Imágenes', description='Set clásico integrado de 70,000 imágenes en escala de grises de 28x28 píxeles.', status='Validado', metadata_json={'source':'tensorflow.keras.datasets.mnist','builtin':True,'rows':70000}),
-                    Dataset(name='CreditCard · Fraude 2024', format='CSV / Valores', description='Dataset anonimizado con registros estructurados de transacciones comerciales etiquetadas.', status='Validado', metadata_json={'source':'kaggle.creditcard','builtin':False,'rows':284807}),
-                    Dataset(name='StockDemand · TimeSeries', format='JSON / Temporal', description='Muestras históricas de solicitudes de inventario estructuradas por intervalos horarios.', status='Pendiente', metadata_json={'source':'internal.warehouse.log','builtin':False,'rows':45000})
-                ])
-                print("✅ 3 Datasets estructurales agregados exitosamente a la base de datos.")
-            
-            db.commit()
-    except Exception as e:
-        print(f"⚠️ Alerta durante la inicialización de datos (Seeding): {e}")
+            for name, description, family in projects:
+                project = db.query(Project).filter(Project.name == name).first()
+                if project is None:
+                    project = Project(name=name, description=description, family=family, status="Activo")
+                    db.add(project)
+                    db.flush()
 
-@app.get('/')
-def root(): 
+                # Cada proyecto recibe una arquitectura inicial solo si aún no tiene una.
+                existing_arch = db.query(Architecture).filter(Architecture.project_id == project.id).first()
+                if existing_arch is None:
+                    db.add(Architecture(
+                        project_id=project.id,
+                        name=f"Arquitectura inicial · {project.name}",
+                        family=family,
+                        config_json={"layers": default_layers(family)},
+                        version=1,
+                    ))
+
+            for name, fmt, description, status, metadata in datasets:
+                dataset = db.query(Dataset).filter(Dataset.name == name).first()
+                if dataset is None:
+                    db.add(Dataset(
+                        name=name,
+                        format=fmt,
+                        description=description,
+                        status=status,
+                        metadata_json=metadata,
+                    ))
+
+            db.commit()
+            print("NeuroLab seed: proyectos, arquitecturas y datasets verificados correctamente.")
+    except Exception as exc:
+        # Se deja el detalle en los logs de Render para diagnosticar DATABASE_URL/permisos.
+        print(f"ERROR al inicializar datos de NeuroLab: {type(exc).__name__}: {exc}")
+        raise
+
+
+@app.get("/")
+def root():
     return {
-        'name': 'NeuroLab Enterprise API',
-        'docs': '/docs',
-        'health': '/api/v1/health'
+        "name": "NeuroLab Enterprise API",
+        "docs": "/docs",
+        "health": "/api/v1/health",
+        "seed": "startup idempotente",
     }
